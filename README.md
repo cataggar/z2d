@@ -75,12 +75,19 @@ vector rasterization, suitable for UI design and other similar tasks.
 
 ## Usage
 
-`zig fetch --save git+https://github.com/vancluever/z2d#[tag or commit]`
+`zig fetch --save git+https://github.com/cataggar/z2d#[commit]`
 
-Note that Zig 0.15.1 or higher is required. For Zig 0.14.x support, the last
-supported version is 0.8.1.
+This fork's `legacy-0.11` branch preserves the 0.11.0 API from
+`david-vanderson/z2d#ac63a6ff54b8e020c6d17ef99686f71cf2e1573d` for SVG consumers
+and requires [cataggar/zig 0.17.0](https://github.com/cataggar/zig/releases/tag/v0.17.0).
+It is separate from the `ghostty` branch's 0.12.1 package; do not interchange
+those dependency generations.
 
-The `zig-0.16` branch can be used for the current development version of Zig.
+Run `zig build -j2 test spec -Doptimize=safe`. The original reference PNGs are
+unchanged. Specs validate chunk CRCs, metadata, zlib checksums and exact decoded
+scanline bytes, rather than requiring compiler-dependent deflate encodings.
+The synchronous `Context.setFontToFile` and `png_exporter.writeToPNGFile` APIs
+are retained; `Font.loadFile` retains its explicit `std.Io` argument.
 
 ## Documentation and examples
 

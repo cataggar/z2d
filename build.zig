@@ -21,19 +21,20 @@ pub fn docsStep(
         .install_subdir = "docs",
     });
 
-    const in_tar = b.pathJoin(
-        &.{ b.install_prefix, "docs", "sources.tar" },
-    );
-    const out_tar = b.pathJoin(
-        &.{ b.install_prefix, "docs", "sources.tar.new" },
-    );
+    const in_tar = b.graph.path(.install_prefix, "docs/sources.tar");
+    const out_tar = b.graph.path(.install_prefix, "docs/sources.tar.new");
     const tar = b.addSystemCommand(&.{"sh"});
     tar.addArgs(&.{
         "-c",
-        b.fmt("cat {s} | tar --delete std > {s}", .{ in_tar, out_tar }),
+        "tar --delete std < \"$1\" > \"$2\"",
+        "z2d-docs",
     });
+    tar.addFileArg(in_tar);
+    tar.addFileArg(out_tar);
 
-    const mv = b.addSystemCommand(&.{ "mv", out_tar, in_tar });
+    const mv = b.addSystemCommand(&.{"mv"});
+    mv.addFileArg(out_tar);
+    mv.addFileArg(in_tar);
 
     tar.step.dependOn(&dir.step);
     mv.step.dependOn(&tar.step);
@@ -46,9 +47,7 @@ pub fn docsStep(
 /// gets better, I'd love to move this to pure Zig.
 pub fn docsServeStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step {
     const server = b.addSystemCommand(&.{ "python3", "-m", "http.server" });
-    // No idea how to access the build prefix otherwise right now, so we have
-    // to set this manually
-    server.setCwd(.{ .cwd_relative = b.pathJoin(&.{ b.install_prefix, "docs" }) });
+    server.setCwd(b.graph.path(.install_prefix, "docs"));
     server.step.dependOn(docs_step);
     return &server.step;
 }
@@ -61,39 +60,33 @@ pub fn docsServeStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step 
 /// If branch is specified, ensures that main.js, main.wasm, and sources.tar
 /// reference that branch.
 pub fn docsBundleStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step {
-    const dir = b.pathJoin(
-        &.{ b.install_prefix, "docs" },
-    );
-    const target = b.pathJoin(
-        &.{ b.install_prefix, "z2d-docs.tar.gz" },
-    );
     const tar = b.addSystemCommand(&.{
         "tar",
         "--create",
         "--gzip",
-        b.fmt("--directory={s}", .{dir}),
-        b.fmt("--file={s}", .{target}),
-        ".",
     });
+    tar.addPrefixedDirectoryArg("--directory=", b.graph.path(.install_prefix, "docs"));
+    tar.addPrefixedFileArg("--file=", b.graph.path(.install_prefix, "z2d-docs.tar.gz"));
+    tar.addArg(".");
 
     const main_js_sed = b.addSystemCommand(&.{
         "sed",
         "--in-place",
         "s#main.js#/docs/main.js#g",
-        b.pathJoin(&.{ dir, "index.html" }),
     });
+    main_js_sed.addFileArg(b.graph.path(.install_prefix, "docs/index.html"));
     const main_wasm_sed = b.addSystemCommand(&.{
         "sed",
         "--in-place",
         "s#main.wasm#/docs/main.wasm#g",
-        b.pathJoin(&.{ dir, "main.js" }),
     });
+    main_wasm_sed.addFileArg(b.graph.path(.install_prefix, "docs/main.js"));
     const sources_tar_sed = b.addSystemCommand(&.{
         "sed",
         "--in-place",
         "s#sources.tar#/docs/sources.tar#g",
-        b.pathJoin(&.{ dir, "main.js" }),
     });
+    sources_tar_sed.addFileArg(b.graph.path(.install_prefix, "docs/main.js"));
     main_js_sed.step.dependOn(docs_step);
     main_wasm_sed.step.dependOn(&main_js_sed.step);
     sources_tar_sed.step.dependOn(&main_wasm_sed.step);
@@ -104,22 +97,22 @@ pub fn docsBundleStep(b: *std.Build, docs_step: *std.Build.Step) *std.Build.Step
 /// A step that runs kcov on an artifact binary (requires kcov to be
 /// installed).
 pub fn coverStep(b: *std.Build, artifact: *std.Build.Step.Compile, clean: bool) *std.Build.Step {
-    const dir = b.pathJoin(
-        &.{ b.install_prefix, "cover" },
-    );
+    const dir = b.graph.path(.install_prefix, "cover");
 
-    const coverage_command = b.addSystemCommand(&.{ "kcov", "--clean", "--include-pattern=z2d", dir });
+    const coverage_command = b.addSystemCommand(&.{ "kcov", "--clean", "--include-pattern=z2d" });
+    coverage_command.addDirectoryArg(dir);
     coverage_command.addArtifactArg(artifact);
 
     if (clean) {
-        const clean_command = b.addSystemCommand(&.{ "rm", "-rf", dir });
+        const clean_command = b.addSystemCommand(&.{ "rm", "-rf" });
+        clean_command.addDirectoryArg(dir);
         coverage_command.step.dependOn(&clean_command.step);
     }
 
     const open_command = b.addSystemCommand(&.{
         if (builtin.target.os.tag == .linux) "xdg-open" else "open",
-        b.pathJoin(&.{ dir, "index.html" }),
     });
+    open_command.addFileArg(b.graph.path(.install_prefix, "cover/index.html"));
 
     open_command.step.dependOn(&coverage_command.step);
     return &open_command.step;

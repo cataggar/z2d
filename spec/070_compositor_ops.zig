@@ -25,14 +25,14 @@ pub fn render(alloc: mem.Allocator, aa_mode: z2d.options.AntiAliasMode) !z2d.Sur
         height,
     );
 
-    inline for (@typeInfo(z2d.compositor.Operator).@"enum".fields, 0..) |op, i| {
+    inline for (comptime @import("std").enums.values(z2d.compositor.Operator), 0..) |op, i| {
         for (0..2) |j| {
             try draw(
                 alloc,
                 &sfc,
                 @intCast(10 + 110 * j),
                 @intCast(10 + 110 * i),
-                @enumFromInt(op.value),
+                op,
                 .integer,
                 aa_mode,
                 @bitCast(@as(u1, @intCast(j))),
@@ -44,7 +44,7 @@ pub fn render(alloc: mem.Allocator, aa_mode: z2d.options.AntiAliasMode) !z2d.Sur
                 &sfc,
                 @intCast(10 + 110 * j),
                 @intCast(10 + 110 * i),
-                @enumFromInt(op.value),
+                op,
                 .float,
                 aa_mode,
                 @bitCast(@as(u1, @intCast(j % 2))),
