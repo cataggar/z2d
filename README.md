@@ -79,6 +79,8 @@ vector rasterization, suitable for UI design and other similar tasks.
 
 This Ghostty compatibility branch requires Zig 0.17.0 and preserves the
 0.12.1 drawing APIs. For Zig 0.15.x support, the last supported version is 0.10.0.
+Run `zig build -j2 test spec -Doptimize=safe` to exercise both the unit tests
+and the unchanged rendered-image fixtures.
 
 ## Documentation and examples
 
