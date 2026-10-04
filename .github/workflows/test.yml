@@ -8,12 +8,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
-          version: 0.16.0-dev.1484+d0ba6642b
+          version: 0.17.0
+          mirror: https://github.com/cataggar/zig/releases/download/v0.17.0
 
       - name: Run unit tests
-        run: zig build test --summary all
+        run: zig build -j2 test --summary all
 
       - name: Run spec tests
-        run: zig build spec --summary all
+        run: zig build -j2 spec --summary all

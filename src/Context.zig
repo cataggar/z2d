@@ -13,6 +13,7 @@
 const Context = @This();
 
 const mem = @import("std").mem;
+const Io = @import("std").Io;
 const testing = @import("std").testing;
 
 const compositor = @import("compositor.zig");
@@ -308,8 +309,10 @@ pub fn setTolerance(self: *Context, tolerance: f64) void {
 /// allocator and freed when `deinit` is called, or if the font is switched via
 /// another `setFontToFile` or `setFontToBuffer` call.
 pub fn setFontToFile(self: *Context, filename: []const u8) Font.LoadFileError!void {
+    var threaded: Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
     self.deinitFont();
-    self.font = .{ .file = try Font.loadFile(self.alloc, filename) };
+    self.font = .{ .file = try Font.loadFile(self.alloc, threaded.io(), filename) };
 }
 
 /// Sets the font to use with `showText`, using a supplied buffer of externally

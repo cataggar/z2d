@@ -17,7 +17,6 @@ const Font = @This();
 const std = @import("std");
 const debug = @import("std").debug;
 const Io = @import("std").Io;
-const fs = @import("std").fs;
 const math = @import("std").math;
 const mem = @import("std").mem;
 const testing = @import("std").testing;
@@ -33,8 +32,9 @@ meta: Meta,
 /// Errors associated with loading a font from a file.
 pub const LoadFileError = LoadBufferError ||
     Io.File.OpenError ||
+    Io.File.StatError ||
     mem.Allocator.Error ||
-    Io.File.ReadStreamingError ||
+    Io.File.ReadPositionalError ||
     error{
         /// The amount of bytes read did not match the size of the file.
         BytesReadMismatch,
@@ -51,19 +51,18 @@ pub const LoadFileError = LoadBufferError ||
 /// The file is read in its entirety into memory. `deinit` must be called to
 /// free the memory when you are finished with the font data.
 pub fn loadFile(alloc: mem.Allocator, io: Io, filename: []const u8) LoadFileError!Font {
-    const size_raw = (try Io.Dir.cwd().statFile(io, filename)).size;
+    const file = try Io.Dir.cwd().openFile(io, filename, .{});
+    defer file.close(io);
+    const size_raw = (try file.stat(io)).size;
     if (size_raw > 0x7FFFF000) {
         // Our size limit here is a Linux limitation on the maximum size of
         // read (2147479552 bytes).
         return error.FileTooLarge;
     }
     const size: usize = @intCast(size_raw);
-    const file = try Io.Dir.cwd().openFile(io, filename, .{});
-    defer file.close();
-
     const buffer = try alloc.alloc(u8, size);
     errdefer alloc.free(buffer);
-    const len_read = try file.read(buffer);
+    const len_read = try file.readPositionalAll(io, buffer, 0);
     if (len_read != size) {
         return error.BytesReadMismatch;
     }
@@ -109,7 +108,7 @@ const ValidateMagicError = error{
 } || Io.Reader.Error;
 
 fn validateMagic(file: *Io.Reader) ValidateMagicError!void {
-    var header = [_]u8{0} ** 4;
+    var header: [4]u8 = @splat(0);
     try file.readSliceAll(&header);
     var header_ok: bool = false;
     if (mem.eql(u8, &header, &.{ '1', 0, 0, 0 })) header_ok = true;
@@ -146,8 +145,8 @@ const Directory = struct {
     fn init(file: *Io.Reader) InitError!Directory {
         var result: Directory = result: {
             var r: Directory = undefined;
-            inline for (@typeInfo(Directory).@"struct".fields) |f| {
-                @field(r, f.name) = 0;
+            inline for (@typeInfo(Directory).@"struct".field_names) |name| {
+                @field(r, name) = 0;
             }
 
             break :result r;
@@ -169,8 +168,8 @@ const Directory = struct {
             file.seek = dir_idx * table_dir_entry_len + table_dir_offset;
             var entry_tag: [4]u8 = undefined;
             try file.readSliceAll(&entry_tag);
-            inline for (@typeInfo(Directory).@"struct".fields) |f| {
-                if (mem.eql(u8, &entry_tag, f.name)) {
+            inline for (@typeInfo(Directory).@"struct".field_names) |name| {
+                if (mem.eql(u8, &entry_tag, name)) {
                     const checksum: u32 = try readerInt(file, u32, .big);
                     const offset: u32 = try readerInt(file, u32, .big);
                     const len: u32 = try readerInt(file, u32, .big);
@@ -185,7 +184,7 @@ const Directory = struct {
                     // the "head" table.
                     var actual_checksum: u32 = 0;
                     file.seek = offset;
-                    const is_head = mem.eql(u8, f.name, "head");
+                    const is_head = mem.eql(u8, name, "head");
                     for (0..((len + 3) / 4)) |j| {
                         if (is_head and j == 2)
                             _ = try readerInt(file, u32, .big)
@@ -200,21 +199,21 @@ const Directory = struct {
                         return error.ChecksumMismatch;
                     }
 
-                    @field(result, f.name) = offset;
+                    @field(result, name) = offset;
                 }
             }
         }
 
         // We currently require all tables, so just go over them and make sure
         // all entries are present.
-        inline for (@typeInfo(Directory).@"struct".fields) |f| {
+        inline for (@typeInfo(Directory).@"struct".field_names) |name| {
             comptime {
-                if (mem.eql(u8, f.name, "kern") or mem.eql(u8, f.name, "GPOS")) {
+                if (mem.eql(u8, name, "kern") or mem.eql(u8, name, "GPOS")) {
                     continue;
                 }
             }
 
-            if (@field(result, f.name) == 0) {
+            if (@field(result, name) == 0) {
                 return error.MissingRequiredTable;
             }
         }
@@ -409,6 +408,7 @@ test "Font.loadFile, loadBuffer" {
         fn f(tc: anytype) TestingError!void {
             var actual: Font = loadFile(
                 testing.allocator,
+                testing.io,
                 tc.path,
             ) catch |err| {
                 debug.print("unexpected error from loadBuffer: {}\n", .{err});

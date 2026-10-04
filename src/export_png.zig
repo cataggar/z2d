@@ -35,9 +35,18 @@ pub const Error = error{
 /// obfuscated due to being pruned from autodoc. Please view source for the
 /// full set.
 pub const WriteToPNGFileError = Error ||
-    fs.File.OpenError ||
+    Io.File.OpenError ||
     Io.Writer.Error ||
-    fs.File.WriteError;
+    Io.File.Writer.Error;
+
+const PNGFile = struct {
+    file: Io.File,
+    io: Io,
+
+    fn write(self: PNGFile, bytes: []const u8) Io.File.Writer.Error!usize {
+        return self.file.writeStreaming(self.io, "", &.{bytes}, 1);
+    }
+};
 
 pub const WriteToPNGFileOptions = struct {
     /// The RGB/color profile to use for exporting.
@@ -67,8 +76,12 @@ pub fn writeToPNGFile(
     }
 
     // Open and create the file.
-    const file = try fs.cwd().createFile(filename, .{});
-    defer file.close();
+    var threaded: Io.Threaded = .init_single_threaded;
+    defer threaded.deinit();
+    const io = threaded.io();
+    const output = try Io.Dir.cwd().createFile(io, filename, .{});
+    defer output.close(io);
+    const file: PNGFile = .{ .file = output, .io = io };
 
     // Write out magic header, and various chunks.
     try writePNGMagic(file);
@@ -79,15 +92,15 @@ pub fn writeToPNGFile(
 }
 
 /// Writes the magic header for the PNG file.
-fn writePNGMagic(file: fs.File) (fs.File.WriteError || Error)!void {
+fn writePNGMagic(file: PNGFile) (Io.File.Writer.Error || Error)!void {
     const header = "\x89PNG\x0D\x0A\x1A\x0A";
     if (try file.write(header) != header.len) return error.BytesWrittenMismatch;
 }
 
 /// Writes the IHDR chunk for the PNG file.
-fn writePNGIHDR(file: fs.File, sfc: surface.Surface) (fs.File.WriteError || Error)!void {
-    var width = [_]u8{0} ** 4;
-    var height = [_]u8{0} ** 4;
+fn writePNGIHDR(file: PNGFile, sfc: surface.Surface) (Io.File.Writer.Error || Error)!void {
+    var width: [4]u8 = @splat(0);
+    var height: [4]u8 = @splat(0);
 
     mem.writeInt(u32, &width, @max(0, sfc.getWidth()), .big);
     mem.writeInt(u32, &height, @max(0, sfc.getHeight()), .big);
@@ -119,12 +132,12 @@ fn writePNGIHDR(file: fs.File, sfc: surface.Surface) (fs.File.WriteError || Erro
     );
 }
 
-fn writePNGgAMA(file: fs.File, profile: color.RGBProfile) (fs.File.WriteError || Error)!void {
+fn writePNGgAMA(file: PNGFile, profile: color.RGBProfile) (Io.File.Writer.Error || Error)!void {
     const gamma: u32 = @intFromFloat((switch (profile) {
         .linear => 1 / color.LinearRGB.gamma,
         .srgb => 1 / color.SRGB.gamma,
     }) * 100000);
-    var gamma_bytes = [_]u8{0} ** 4;
+    var gamma_bytes: [4]u8 = @splat(0);
     mem.writeInt(u32, &gamma_bytes, gamma, .big);
     try writePNGWriteChunk(
         file,
@@ -135,14 +148,14 @@ fn writePNGgAMA(file: fs.File, profile: color.RGBProfile) (fs.File.WriteError ||
 
 const WritePNGIDATStreamError = Error ||
     Io.Writer.Error ||
-    fs.File.WriteError;
+    Io.File.Writer.Error;
 
 /// Write the IDAT stream (pixel data) for the PNG file.
 ///
 /// This is currently a very rudimentary algorithm - default zlib
 /// compression and no pixel filtering.
 fn writePNGIDATStream(
-    file: fs.File,
+    file: PNGFile,
     sfc: surface.Surface,
     profile: ?color.RGBProfile,
 ) WritePNGIDATStreamError!void {
@@ -152,7 +165,7 @@ fn writePNGIDATStream(
     const IDATStream = struct {
         const buffer_size = 16384;
 
-        file: fs.File,
+        file: PNGFile,
         writer: Io.Writer,
 
         fn drain(w: *Io.Writer, data: []const []const u8, splat: usize) Io.Writer.Error!usize {
@@ -170,8 +183,8 @@ fn writePNGIDATStream(
         }
     };
 
-    var idat_buffer = [_]u8{0} ** IDATStream.buffer_size;
-    var zlib_buffer = [_]u8{0} ** flate.max_window_len;
+    var idat_buffer: [IDATStream.buffer_size]u8 = @splat(0);
+    var zlib_buffer: [flate.max_window_len]u8 = @splat(0);
     var idat_stream: IDATStream = .{
         .file = file,
         .writer = .{
@@ -201,7 +214,7 @@ fn writePNGIDATStream(
         //
         // Buffer is 4 * vector_length + 1 bytes to accommodate both scanline
         // header and current maximum bpp (which is a u32).
-        var pixel_buffer = [_]u8{0} ** (4 * vector_length + 1);
+        var pixel_buffer: [4 * vector_length + 1]u8 = @splat(0);
         var nbytes: usize = 1; // Adds scanline header (0x00 - no filtering)
 
         const stride = sfc.getStride(0, y, @max(0, sfc_width));
@@ -226,7 +239,7 @@ fn writePNGIDATStream(
 
                 switch (stride) {
                     inline .xrgb, .rgb => |s| {
-                        var stride_vec = [_]u32{0} ** vector_length;
+                        var stride_vec: [vector_length]u32 = @splat(0);
                         @memcpy(stride_vec[0..stride_len], @as([]u32, @ptrCast(s[x .. x + stride_len])));
                         stride_vec = encodeRGBAVec(
                             stride_vec,
@@ -243,7 +256,7 @@ fn writePNGIDATStream(
                         break :written stride_len * 3;
                     },
                     inline .argb, .rgba => |s| {
-                        var stride_vec = [_]u32{0} ** vector_length;
+                        var stride_vec: [vector_length]u32 = @splat(0);
                         @memcpy(stride_vec[0..stride_len], @as([]u32, @ptrCast(s[x .. x + stride_len])));
                         stride_vec = encodeRGBAVec(
                             stride_vec,
@@ -296,7 +309,7 @@ fn writePNGIDATStream(
     }
 
     // Close off and write the remaining bytes. This should always succeed.
-    try zlib_stream.writer.flush();
+    try zlib_stream.finish();
     try idat_stream.writer.flush();
 }
 
@@ -362,18 +375,18 @@ fn encodeRGBAVec(
 
 /// Writes a single IDAT chunk. The data should be part of the zlib
 /// stream. See writePNG_IDAT_stream et al.
-fn writePNGIDATSingle(file: fs.File, data: []const u8) (fs.File.WriteError || Error)!void {
+fn writePNGIDATSingle(file: PNGFile, data: []const u8) (Io.File.Writer.Error || Error)!void {
     try writePNGWriteChunk(file, "IDAT".*, data);
 }
 
 /// Write the IEND chunk.
-fn writePNGIEND(file: fs.File) (fs.File.WriteError || Error)!void {
+fn writePNGIEND(file: PNGFile) (Io.File.Writer.Error || Error)!void {
     try writePNGWriteChunk(file, "IEND".*, "");
 }
 
 /// Generic chunk writer, used by higher-level chunk writers to process
 /// and write the payload.
-fn writePNGWriteChunk(file: fs.File, chunk_type: [4]u8, data: []const u8) (fs.File.WriteError || Error)!void {
+fn writePNGWriteChunk(file: PNGFile, chunk_type: [4]u8, data: []const u8) (Io.File.Writer.Error || Error)!void {
     if (data.len > math.maxInt(u32)) {
         @panic("bad PNG chunk data length (larger than 4GB). this is a bug, please report it");
     }
@@ -396,14 +409,13 @@ fn writePNGWriteChunk(file: fs.File, chunk_type: [4]u8, data: []const u8) (fs.Fi
     if (try writeInt(file, u32, checksum, .big) != 4) return error.BytesWrittenMismatch;
 }
 
-/// Convenience method taken from std.Io.Writer so that we can use
-/// fs.File.write directly.
+/// Writes an integer directly without an additional output buffer.
 fn writeInt(
-    file: fs.File,
+    file: PNGFile,
     comptime T: type,
     value: T,
     endian: builtin.Endian,
-) fs.File.WriteError!usize {
+) Io.File.Writer.Error!usize {
     var bytes: [@divExact(@typeInfo(T).int.bits, 8)]u8 = undefined;
     mem.writeInt(math.ByteAlignedInt(@TypeOf(value)), &bytes, value, endian);
     return file.write(&bytes);
@@ -444,7 +456,7 @@ test "RGB/ARGB formats all export to same image" {
 
             var tmp_dir = testing.tmpDir(.{});
             defer tmp_dir.cleanup();
-            const parent_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+            const parent_path = try tmp_dir.dir.realPathFileAlloc(testing.io, ".", alloc);
             defer alloc.free(parent_path);
             const target_path = try fs.path.join(alloc, &.{ parent_path, "z2d_test.png" });
             defer alloc.free(target_path);
@@ -454,7 +466,7 @@ test "RGB/ARGB formats all export to same image" {
                 .{},
             );
 
-            const actual_data = try fs.cwd().readFileAlloc(target_path, alloc, .limited(10240000));
+            const actual_data = try Io.Dir.cwd().readFileAlloc(testing.io, target_path, alloc, .limited(10240000));
             defer alloc.free(actual_data);
             if (expected_hash_) |expected_hash| {
                 var actual_hash: [sha256.digest_length]u8 = undefined;

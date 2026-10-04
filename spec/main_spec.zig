@@ -8,6 +8,12 @@ const heap = @import("std").heap;
 const mem = @import("std").mem;
 const sha256 = @import("std").crypto.hash.sha2.Sha256;
 const testing = @import("std").testing;
+const Io = @import("std").Io;
+const flate = @import("std").compress.flate;
+const TmpDir = @import("TmpDir.zig");
+
+var threaded: Io.Threaded = .init_single_threaded;
+const io = if (@import("builtin").is_test) testing.io else threaded.io();
 
 const z2d = @import("z2d");
 
@@ -97,7 +103,9 @@ const _082_stroke_hairline_clip = @import("082_stroke_hairline_clip.zig");
 //////////////////////////////////////////////////////////////////////////////
 
 pub fn main() !void {
-    var gpa = heap.GeneralPurposeAllocator(.{}){};
+    var gpa: heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa.deinit();
+    defer threaded.deinit();
     const alloc = gpa.allocator();
 
     try compositorExportRun(alloc, _001_smile_rgb);
@@ -581,7 +589,10 @@ fn pathExportRun(alloc: mem.Allocator, subject: anytype) !void {
     defer surface_smooth_msaa.deinit(alloc);
     const target_path = try fs.path.join(alloc, &.{ "spec/files", filename_smooth_msaa });
     defer alloc.free(target_path);
-    fs.cwd().deleteFile(target_path) catch {};
+    Io.Dir.cwd().deleteFile(io, target_path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
     var exported_file_smooth_msaa = try testExportPNG(
         alloc,
         surface_smooth_msaa,
@@ -694,13 +705,13 @@ fn pathTestRun(alloc: mem.Allocator, subject: anytype) !void {
 }
 
 const testExportPNGDetails = struct {
-    tmp_dir: testing.TmpDir,
+    tmp_dir: TmpDir,
     target_path: []const u8,
     alloc: mem.Allocator,
 
     fn cleanup(self: *testExportPNGDetails) void {
         self.alloc.free(self.target_path);
-        self.tmp_dir.cleanup();
+        self.tmp_dir.cleanup(io);
     }
 };
 
@@ -710,9 +721,9 @@ fn testExportPNG(
     filename: []const u8,
     profile: ?z2d.color.RGBProfile,
 ) !testExportPNGDetails {
-    var tmp_dir = testing.tmpDir(.{});
-    errdefer tmp_dir.cleanup();
-    const parent_path = try tmp_dir.dir.realpathAlloc(alloc, ".");
+    var tmp_dir = TmpDir.init(io, .{});
+    errdefer tmp_dir.cleanup(io);
+    const parent_path = try tmp_dir.dir.realPathFileAlloc(io, ".", alloc);
     defer alloc.free(parent_path);
     const target_path = try fs.path.join(alloc, &.{ parent_path, filename });
     errdefer alloc.free(target_path);
@@ -740,7 +751,8 @@ fn compareFiles(alloc: mem.Allocator, actual_filename: []const u8, print_output:
     defer alloc.free(expected_filename);
 
     var used_fallback: bool = false;
-    const expected_data = fs.cwd().readFileAlloc(
+    const expected_data = Io.Dir.cwd().readFileAlloc(
+        io,
         expected_filename,
         alloc,
         .limited(max_file_size),
@@ -748,7 +760,7 @@ fn compareFiles(alloc: mem.Allocator, actual_filename: []const u8, print_output:
         // In the event of our MSAA tests, there might be a file ending in
         // "_smooth_multisample.png". Check that first, if that file isn't there,
         // then our expected content is in just "_smooth.png".
-        if (mem.endsWith(u8, expected_filename, "_smooth_multisample.png")) {
+        if (err == error.FileNotFound and mem.endsWith(u8, expected_filename, "_smooth_multisample.png")) {
             used_fallback = true;
             const expected_backup = try mem.replaceOwned(
                 u8,
@@ -758,20 +770,18 @@ fn compareFiles(alloc: mem.Allocator, actual_filename: []const u8, print_output:
                 "_smooth.png",
             );
             defer alloc.free(expected_backup);
-            break :data try fs.cwd().readFileAlloc(expected_backup, alloc, .limited(max_file_size));
+            break :data try Io.Dir.cwd().readFileAlloc(io, expected_backup, alloc, .limited(max_file_size));
         }
 
         return err;
     };
 
     defer alloc.free(expected_data);
-    var expected_hash: [sha256.digest_length]u8 = undefined;
-    sha256.hash(expected_data, &expected_hash, .{});
+    const expected_hash = try pngHash(alloc, expected_data);
 
-    const actual_data = try fs.cwd().readFileAlloc(actual_filename, alloc, .limited(max_file_size));
+    const actual_data = try Io.Dir.cwd().readFileAlloc(io, actual_filename, alloc, .limited(max_file_size));
     defer alloc.free(actual_data);
-    var actual_hash: [sha256.digest_length]u8 = undefined;
-    sha256.hash(actual_data, &actual_hash, .{});
+    const actual_hash = try pngHash(alloc, actual_data);
 
     if (!mem.eql(u8, &expected_hash, &actual_hash)) {
         if (print_output) {
@@ -786,6 +796,105 @@ fn compareFiles(alloc: mem.Allocator, actual_filename: []const u8, print_output:
                 },
             );
         }
+
         return error.SpecTestFileMismatch;
     }
+}
+
+/// Deflate encodings can change between compilers; metadata and scanlines cannot.
+fn pngHash(alloc: mem.Allocator, bytes: []const u8) ![sha256.digest_length]u8 {
+    var reader: Io.Reader = .fixed(bytes);
+    if (!mem.eql(u8, try reader.take(8), "\x89PNG\r\n\x1a\n"))
+        return error.InvalidPNGSignature;
+    var compressed: @import("std").ArrayList(u8) = .empty;
+    defer compressed.deinit(alloc);
+    var hasher: sha256 = .init(.{});
+    var first = true;
+    while (true) {
+        const length_bytes = try reader.takeArray(4);
+        const length = mem.readInt(u32, length_bytes, .big);
+        const kind = try reader.takeArray(4);
+        const data = try reader.take(length);
+        const expected_crc = mem.readInt(u32, try reader.takeArray(4), .big);
+        var crc: @import("std").hash.Crc32 = .init();
+        crc.update(kind);
+        crc.update(data);
+        if (crc.final() != expected_crc) return error.InvalidPNGCRC;
+        if (first and (!mem.eql(u8, kind, "IHDR") or length != 13))
+            return error.InvalidPNGHeader;
+        first = false;
+        if (mem.eql(u8, kind, "IDAT")) {
+            try compressed.appendSlice(alloc, data);
+        } else {
+            hasher.update(length_bytes);
+            hasher.update(kind);
+            hasher.update(data);
+        }
+        if (mem.eql(u8, kind, "IEND")) {
+            if (length != 0 or reader.bufferedLen() != 0)
+                return error.InvalidPNGEnd;
+            break;
+        }
+    }
+    var input: Io.Reader = .fixed(compressed.items);
+    var decompressor: flate.Decompress = .init(&input, .zlib, &.{});
+    const scanlines = decompressor.reader.allocRemaining(alloc, .limited(64 * 1024 * 1024)) catch |err|
+        return decompressor.err orelse err;
+    defer alloc.free(scanlines);
+    if (input.bufferedLen() != 0 or
+        @import("std").hash.Adler32.hash(scanlines) != decompressor.container_metadata.zlib.adler)
+        return error.InvalidPNGZlib;
+    hasher.update(scanlines);
+    return hasher.finalResult();
+}
+
+test "PNG comparison preserves pixels across compression encodings" {
+    const Case = struct {
+        fn chunk(writer: *Io.Writer, kind: *const [4]u8, bytes: []const u8) !void {
+            try writer.writeInt(u32, @intCast(bytes.len), .big);
+            try writer.writeAll(kind);
+            try writer.writeAll(bytes);
+            var crc: @import("std").hash.Crc32 = .init();
+            crc.update(kind);
+            crc.update(bytes);
+            try writer.writeInt(u32, crc.final(), .big);
+        }
+
+        fn image(comptime raw: bool, red: u8) ![]u8 {
+            var compressed = try Io.Writer.Allocating.initCapacity(testing.allocator, 128);
+            defer compressed.deinit();
+            var buffer: [flate.max_window_len]u8 = undefined;
+            var compressor = if (raw)
+                try flate.Compress.Raw.init(&compressed.writer, &buffer, .zlib)
+            else
+                try flate.Compress.init(&compressed.writer, &buffer, .zlib, .default);
+            try compressor.writer.writeAll(&.{ 0, red, 20, 30 });
+            try compressor.finish();
+            var png: Io.Writer.Allocating = .init(testing.allocator);
+            errdefer png.deinit();
+            try png.writer.writeAll("\x89PNG\r\n\x1a\n");
+            try chunk(&png.writer, "IHDR", &.{ 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0 });
+            try chunk(&png.writer, "IDAT", compressed.written());
+            try chunk(&png.writer, "IEND", "");
+            return png.toOwnedSlice();
+        }
+    };
+    const normal = try Case.image(false, 10);
+    defer testing.allocator.free(normal);
+    const raw = try Case.image(true, 10);
+    defer testing.allocator.free(raw);
+    const changed = try Case.image(false, 11);
+    defer testing.allocator.free(changed);
+    try testing.expect(!mem.eql(u8, normal, raw));
+    try testing.expectEqualSlices(u8, &(try pngHash(testing.allocator, normal)), &(try pngHash(testing.allocator, raw)));
+    try testing.expect(!mem.eql(u8, &(try pngHash(testing.allocator, normal)), &(try pngHash(testing.allocator, changed))));
+}
+
+test "PNG comparison rejects corruption and truncation" {
+    const original = @embedFile("files/003_fill_triangle_pixelated.png");
+    const corrupt = try testing.allocator.dupe(u8, original);
+    defer testing.allocator.free(corrupt);
+    corrupt[41] ^= 1;
+    try testing.expectError(error.InvalidPNGCRC, pngHash(testing.allocator, corrupt));
+    try testing.expectError(error.EndOfStream, pngHash(testing.allocator, original[0 .. original.len - 1]));
 }

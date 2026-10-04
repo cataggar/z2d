@@ -15,8 +15,8 @@ var debug_allocator: heap.DebugAllocator(.{}) = .init;
 
 pub fn main() !void {
     const alloc, const is_debug = switch (builtin.mode) {
-        .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },
-        .ReleaseFast, .ReleaseSmall => .{ heap.smp_allocator, false },
+        .debug, .safe => .{ debug_allocator.allocator(), true },
+        .fast, .small => .{ heap.smp_allocator, false },
     };
 
     defer if (is_debug) {
@@ -72,11 +72,11 @@ for benchmarks is in `main_bench.zig` and follows a similar pattern to the
 acceptance tests.
 
 To run the benchmarks, in *this* directory, run (recommended):
-`zig build -Doptimize=ReleaseFast`. Note that `ReleaseFast` or `ReleaseSmall`
+`zig build -Doptimize=fast`. Note that `fast` or `small`
 is necessary to get memory readings, which are disabled in `Debug` and
 `ReleaseSafe` modes.
 
-To filter, run `zig build -Doptimize=ReleaseFast -Dfilter=STRING`. This filters
+To filter, run `zig build -Doptimize=fast -Dfilter=STRING`. This filters
 on `STRING`, similar to the acceptance tests, except that only one filter can
 be specified.
 
