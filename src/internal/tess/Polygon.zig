@@ -156,7 +156,7 @@ pub fn inBox(self: *const Polygon, scale: f64, box_width: i32, box_height: i32) 
 
     // Fast-path negative bottom or right side - if either of these are true,
     // then there's no chance we're in the box.
-    if (self.extent_right < 0.0 or self.extent_bottom < 0.0 ) {
+    if (self.extent_right < 0.0 or self.extent_bottom < 0.0) {
         return false;
     }
 
