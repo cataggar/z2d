@@ -657,9 +657,10 @@ test "slope difference below epsilon does not produce NaN" {
         defer result.deinit(alloc);
         try testing.expectEqual(6, result.edges.items.len);
         for (result.edges.items, 0..) |edge, idx| {
-            inline for (@typeInfo(Polygon.Edge).@"struct".fields) |f| {
-                if (@typeInfo(f.type) == .float) {
-                    if (!math.isFinite(@field(edge, f.name))) {
+            const info = @typeInfo(Polygon.Edge).@"struct";
+            inline for (info.field_names, info.field_types) |name, T| {
+                if (@typeInfo(T) == .float) {
+                    if (!math.isFinite(@field(edge, name))) {
                         debug.print("Non-finite value found at index {}, data: {}\n", .{ idx, edge });
                         return error.TestExpectedFinite;
                     }

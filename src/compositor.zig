@@ -843,9 +843,9 @@ const RGBA16Vec = struct {
     }
 
     fn transposeToMask(T: type, field: []const u8) [vector_length]i32 {
-        debug.assert(@typeInfo(T).@"struct".fields.len == 4);
-        inline for (@typeInfo(T).@"struct".fields, 0..) |f, i| {
-            if (mem.eql(u8, f.name, field)) {
+        debug.assert(@typeInfo(T).@"struct".field_names.len == 4);
+        inline for (@typeInfo(T).@"struct".field_names, 0..) |name, i| {
+            if (mem.eql(u8, name, field)) {
                 return genTransposeToShuffleMask(4, i);
             }
         }
@@ -944,9 +944,9 @@ const RGBA16Vec = struct {
     }
 
     fn transposeFromMask(T: type, field: []const u8) [vector_length * 4]i32 {
-        debug.assert(@typeInfo(T).@"struct".fields.len == 4);
-        inline for (@typeInfo(T).@"struct".fields, 0..) |f, i| {
-            if (mem.eql(u8, f.name, field)) {
+        debug.assert(@typeInfo(T).@"struct".field_names.len == 4);
+        inline for (@typeInfo(T).@"struct".field_names, 0..) |name, i| {
+            if (mem.eql(u8, name, field)) {
                 return genTransposeFromShuffleMask(4, i);
             }
         }
